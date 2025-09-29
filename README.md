@@ -1,2 +1,326 @@
-# Psketch
-PSketch is an in-kernel, priority-aware eBPF sketch on commodity Linux. It losslessly tracks high-priority flows via a hash table, approximates top-k elephants with a sketch pipeline, supports TCP/UDP, and tracks retransmissions in-kernel. On 10 Gbps CAIDA traces: 96.0% top-k, 96.4% retrans recall, ~0.7% throughput loss.
+# Priority-Aware In-Kernel Flow Monitoring via eBPF
+
+This repository contains an eBPF-based framework for real-time network flow monitoring that distinguishes and prioritizes selected high-priority flows while approximating top-k elephant flows. The system operates entirely in the Linux kernel and is built for environments requiring low overhead, accurate flow statistics, and retransmission tracking without the need for specialized hardware.
+
+> 📌 This work is currently under peer review at a top-tier systems and networking venue.
+
+---
+
+## ✨ Key Features
+
+- ⚡ **Real-Time Kernel Monitoring**: Uses eBPF to inspect packets at the `netif_receive_skb` tracepoint with minimal overhead.
+- 🎯 **Priority-Aware Design**: Tracks user-defined priority flows precisely and all other flows via sketch-based approximation.
+- 📊 **Top-k Detection**: Implements multi-layer Count-Min Sketch (CMS) structures to identify top-k flows.
+- 🔁 **Retransmission Detection**: Integrates TCP retransmission tracking through sequence number and timeout logic.
+- 📈 **Evaluated on 10Gbps CAIDA Traces**: Demonstrates >95% accuracy in top-k flow detection and >96% retransmission recall.
+
+---
+
+## 🏗️ Project Structure
+
+```
+Priority-Sketch-in-eBPF-main/
+├── main.py                 # Main entry point
+├── config.py              # Configuration and constants
+├── structures.py           # Data structure definitions
+├── utils.py               # Utility functions
+├── ebpf_manager.py        # eBPF program management
+├── grpc_service.py        # gRPC service implementation
+├── ebpf_headers.h         # eBPF headers and constants
+├── ebpf_structures.h      # eBPF data structures
+├── ebpf_hash.h            # Hash function implementations
+├── ebpf_helpers.h         # eBPF helper functions
+├── ebpf_main.c            # Main eBPF program
+├── example_usage.py       # Usage examples
+├── requirements.txt       # Python dependencies
+└── README.md             # Project documentation
+```
+
+---
+
+## 🔧 Technical Highlights
+
+### ✳️ Priority Table
+Implemented using an eBPF hash map to maintain a whitelist of high-priority flows by 5-tuple.
+
+### ✳️ Heavy Flow Table
+Collision-aware eviction with a voting-based scheme. Each entry uses a `negative_counter` to track hash collisions and evict outdated flows.
+
+### ✳️ Top-k Flow Estimation
+Three-layer Count-Min Sketch estimates packet counts. Final estimate uses:
+```
+min(cms1[i], cms2[j], cms3[k])
+```
+
+### ✳️ Retransmission Detection
+A packet is marked retransmitted if:
+```
+seq < expected_seq and (t_now - t_last) > THRESH
+```
+
+### ✳️ gRPC Interface
+User-space collector connects to eBPF via gRPC to receive prioritized stats and logs.
+
+---
+
+## 📊 Evaluation Summary
+
+- **Top-k Accuracy**: >95%
+- **Retransmission Recall**: >96%
+- **Throughput Overhead**: <1.1%
+- **CPU Usage**: Moderate (<30%)
+- **Trace Used**: CAIDA 10Gbps packet captures
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+```bash
+# Install system dependencies
+sudo apt update
+sudo apt install clang llvm python3-bcc
+
+# Install Python dependencies
+pip install -r requirements.txt
+```
+
+### Running the System
+```bash
+# Start the Priority-Sketch system
+sudo python3 main.py
+```
+
+### Configuration
+Edit `config.py` to customize:
+- Network interface names
+- gRPC server settings
+- eBPF program parameters
+- File paths and logging
+
+---
+
+## 🔧 Development
+
+### Code Organization
+The codebase has been refactored for better organization:
+
+- **`config.py`**: All constants and configuration parameters
+- **`structures.py`**: Data structure definitions for both C and Python
+- **`utils.py`**: Utility functions for network operations, hashing, and data processing
+- **`ebpf_manager.py`**: eBPF program management and data collection
+- **`grpc_service.py`**: gRPC service implementation
+- **`main.py`**: Simple entry point
+
+### Adding New Features
+1. Add constants to `config.py`
+2. Define new structures in `structures.py`
+3. Implement utility functions in `utils.py`
+4. Update eBPF code in the `ebpf_*.h` and `ebpf_main.c` files
+5. Update Python managers as needed
+
+---
+
+## 📝 Code Refactoring Summary
+
+### 🎯 Refactoring Goals
+Transform the original single-file code into a modular, maintainable code structure.
+
+### 📊 Before and After Comparison
+
+#### Before Refactoring
+- **sketch.c**: 492 lines containing all eBPF logic
+- **user_level.py**: 679 lines with a single class handling all functionality
+- Hardcoded constants scattered throughout the code
+- Mixed functionality, difficult to maintain
+
+#### After Refactoring
+- **Modular Design**: Functionality separated into different files
+- **Centralized Configuration**: All constants managed in config.py
+- **Utility Functions**: Common functionality extracted to utils.py
+- **Clear Structure**: Each file has a specific responsibility
+
+### ✨ Refactoring Improvements
+
+#### 1. Configuration Management
+- **config.py**: Centralized management of all constants and parameters
+- Easy to modify configuration without searching through code
+- Support for different environment configurations
+
+#### 2. Data Structures
+- **structures.py**: Unified data structure definitions
+- Consistent C and Python structures
+- Easy to maintain and extend
+
+#### 3. Utility Functions
+- **utils.py**: Modularized common functionality
+- Separated network operations, hash calculations, and data processing
+- Reusable utility functions
+
+#### 4. eBPF Code Organization
+- **ebpf_headers.h**: Headers and constants
+- **ebpf_structures.h**: Data structure definitions
+- **ebpf_hash.h**: Hash function implementations
+- **ebpf_helpers.h**: Helper functions
+- **ebpf_main.c**: Main program logic
+
+#### 5. Python Code Separation
+- **ebpf_manager.py**: eBPF program management
+- **grpc_service.py**: gRPC service implementation
+- **main.py**: Simplified main entry point
+
+### 📈 Refactoring Benefits
+
+#### Maintainability
+- Modular code with clear responsibilities
+- Easy to locate and modify specific functionality
+- Reduced code duplication
+
+#### Extensibility
+- New features can be added independently
+- Configuration separated from implementation
+- Support for different deployment environments
+
+#### Readability
+- Clear code structure
+- Comprehensive comments and documentation
+- Usage examples provided
+
+#### Test-Friendly
+- Modular design facilitates unit testing
+- Dependency injection supports mock testing
+- Configuration can be tested independently
+
+---
+
+## 🧹 Code Cleanup Summary
+
+### Cleanup Completed
+
+#### Deleted Files
+- ✅ **`sketch.c`** - Original 492-line eBPF code, replaced by modular eBPF files
+- ✅ **`user_level.py`** - Original 679-line Python code, replaced by separated modules
+
+#### Fixed Issues
+- ✅ **`ebpf_helpers.h`** - Fixed assignment operator error in `assign_tuples` function (`==` changed to `=`)
+- ✅ **`utils.py`** - Merged duplicate hash functions, reducing code duplication
+- ✅ **`utils.py`** - Optimized logging functions, reducing duplicate file write operations
+
+#### Code Optimizations
+- ✅ **Hash Function Merging**: Combined `get_hash_value` and `get_hash_value_cms`, reducing duplicate code
+- ✅ **Logging Function Optimization**: Simplified statistical logging write logic
+- ✅ **Documentation Update**: Updated README.md to reflect the cleaned file structure
+
+### 📊 Before and After Cleanup
+
+#### Before Cleanup
+```
+Priority-Sketch-in-eBPF-main/
+├── sketch.c               # 492-line original eBPF code
+├── user_level.py          # 679-line original Python code
+├── ebpf_*.h               # Modular eBPF files
+├── *.py                   # Modular Python files
+└── ...                    # Other files
+```
+
+#### After Cleanup
+```
+Priority-Sketch-in-eBPF-main/
+├── main.py                # Main entry point
+├── config.py             # Configuration management
+├── structures.py          # Data structures
+├── utils.py              # Utility functions
+├── ebpf_manager.py       # eBPF management
+├── grpc_service.py       # gRPC service
+├── ebpf_*.h              # Modular eBPF files
+├── ebpf_main.c           # Main eBPF program
+├── example_usage.py      # Usage examples
+└── ...                   # Other files
+```
+
+### ✨ Cleanup Benefits
+
+#### Code Quality
+- **Reduced Duplication**: Merged duplicate hash functions and logging functions
+- **Fixed Errors**: Corrected assignment operator errors
+- **Improved Readability**: Removed redundant original files
+
+#### Maintainability
+- **Clear Structure**: Only essential modular files remain
+- **Easy to Understand**: New developers can quickly understand project structure
+- **Reduced Confusion**: Avoided mixing old and new code
+
+#### Performance
+- **Reduced File I/O**: Optimized logging write operations
+- **Reduced Duplicate Calculations**: Merged duplicate hash calculation logic
+
+---
+
+## 🎯 Final File Structure
+
+The project now contains the following core files:
+
+### Python Modules
+- **`main.py`** - Simplified main entry point
+- **`config.py`** - Configuration and constant management
+- **`structures.py`** - Data structure definitions
+- **`utils.py`** - Utility function collection
+- **`ebpf_manager.py`** - eBPF program management
+- **`grpc_service.py`** - gRPC service implementation
+- **`example_usage.py`** - Usage examples
+
+### eBPF Modules
+- **`ebpf_headers.h`** - Headers and constants
+- **`ebpf_structures.h`** - Data structure definitions
+- **`ebpf_hash.h`** - Hash function implementations
+- **`ebpf_helpers.h`** - Helper functions
+- **`ebpf_main.c`** - Main eBPF program
+
+### Documentation and Configuration
+- **`README.md`** - Project documentation
+- **`requirements.txt`** - Python dependencies
+
+---
+
+## 🚀 Usage
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the system
+sudo python3 main.py
+
+# View examples
+python3 example_usage.py
+```
+
+---
+
+## 🚀 Next Steps
+
+1. **Add Unit Tests**: Write test cases for each module
+2. **Performance Optimization**: Analyze and optimize critical paths
+3. **Error Handling**: Enhance error handling and recovery mechanisms
+4. **Monitoring**: Add system monitoring and metrics collection
+5. **Documentation**: Complete API documentation and usage guides
+
+---
+
+## 📝 Summary
+
+Through this refactoring and cleanup, the code has been transformed from a single-file structure to a modular architecture, greatly improving code maintainability, extensibility, and readability. The new structure enables:
+
+- Developers to quickly locate and modify specific functionality
+- New features to be developed and tested independently
+- More flexible configuration management
+- Higher code reusability
+- Easier system deployment and maintenance
+
+This modular design provides a solid foundation for future feature extensions and performance optimizations.
+
+---
+
+## 📎 Citation
+
+> This project is currently under review. A formal citation will be added after publication.
