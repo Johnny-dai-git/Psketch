@@ -1,189 +1,94 @@
-# Priority-Aware In-Kernel Flow Monitoring via eBPF
+PSketch: Priority-Aware In-Kernel Flow Monitoring via eBPF
+PSketch is the first in-kernel priority-aware sketch framework built entirely in eBPF. It combines precise per-flow tracking for user-defined priority flows with Count-Min Sketch-based approximation for all other traffic, achieving >95% Top-K accuracy and <1.1% throughput overhead at 10 Gbps on commodity Linux servers without any specialized hardware.
+Published at IEEE ICNC 2026: https://ieeexplore.ieee.org/document/11416971
 
-This repository contains an eBPF-based framework for real-time network flow monitoring that distinguishes and prioritizes selected high-priority flows while approximating top-k elephant flows. The system operates entirely in the Linux kernel and is built for environments requiring low overhead, accurate flow statistics, and retransmission tracking without the need for specialized hardware.
+Overview
+Modern AI and distributed ML workloads generate highly heterogeneous network traffic. Monitoring all flows at line rate is prohibitively expensive, but missing critical flows (e.g., gradient synchronization traffic) can degrade system observability. PSketch addresses this by treating flows differently based on priority: high-priority flows are tracked precisely in a BPF hash map, while all other flows are estimated using a three-layer Count-Min Sketch running entirely in the kernel.
+The system attaches to the netif_receive_skb tracepoint and processes every packet with sub-microsecond overhead, requiring no kernel modifications and no specialized NICs.
 
-> 📌 This work is currently under peer review at a top-tier systems and networking venue.
+Key Features
 
----
+Priority-aware design: User-defined priority flows (by 5-tuple) are tracked precisely. All other flows are approximated via sketch.
+Top-K detection: Three-layer Count-Min Sketch with voting-based hash collision resolution identifies the top-K elephant flows.
+Retransmission tracking: TCP retransmissions detected via sequence number comparison and configurable timeout thresholds.
+In-kernel operation: Entire monitoring pipeline runs in the Linux kernel via eBPF. No user-space packet copies.
+gRPC interface: User-space collector receives prioritized flow stats and logs via gRPC without polling.
+Atomic safety: All shared counter updates use __sync_fetch_and_add for thread-safe concurrent access across CPU cores.
 
-## ✨ Key Features
 
-- ⚡ **Real-Time Kernel Monitoring**: Uses eBPF to inspect packets at the `netif_receive_skb` tracepoint with minimal overhead.
-- 🎯 **Priority-Aware Design**: Tracks user-defined priority flows precisely and all other flows via sketch-based approximation.
-- 📊 **Top-k Detection**: Implements multi-layer Count-Min Sketch (CMS) structures to identify top-k flows.
-- 🔁 **Retransmission Detection**: Integrates TCP retransmission tracking through sequence number and timeout logic.
-- 📈 **Evaluated on 10Gbps CAIDA Traces**: Demonstrates >95% accuracy in top-k flow detection and >96% retransmission recall.
+System Architecture
+Incoming Packets
+       |
+       v
+  netif_receive_skb (eBPF tracepoint)
+       |
+       +---> Priority Table (BPF_HASH)
+       |         - Exact match on 5-tuple
+       |         - Precise packet/retransmission counters
+       |
+       +---> Heavy Flow Table
+       |         - Collision-aware eviction (negative_counter voting)
+       |         - Tracks elephant flow candidates
+       |
+       +---> Count-Min Sketch (3-layer CMS)
+                 - Approximate Top-K estimation
+                 - min(cms1[i], cms2[j], cms3[k])
+                 |
+                 v
+           gRPC Service --> User-space Collector
 
----
+Technical Design
+Priority Table
+Implemented as a BPF_HASH map keyed by 5-tuple. Each matched packet atomically increments packet and retransmission counters. Provides O(1) lookup per packet.
+Heavy Flow Table and Collision Resolution
+Each slot maintains a negative_counter that increments on hash collisions. When negative_counter exceeds a configurable eviction threshold (VOTE_THRE), the entry is evicted and replaced. This prevents stale entries from polluting the sketch without requiring expensive locks.
+Top-K Estimation (Count-Min Sketch)
+Three independent hash functions map each flow to entries in three CMS layers. The packet count estimate uses:
+estimated_count = min(cms1[h1(flow)], cms2[h2(flow)], cms3[h3(flow)])
+This provides an upper-bound estimate with bounded error probability.
+Retransmission Detection
+A packet is flagged as a retransmission if:
+seq < expected_seq  AND  (t_now - t_last) > RETRANS_THRESH
+Sequence number state is maintained per-flow in the priority table.
+Thread Safety
+All counter updates across priority table, heavy flow table, and CMS layers use __sync_fetch_and_add. This is required because eBPF programs are dispatched to multiple CPU cores in parallel by the kernel and share the same BPF maps.
 
-## 🏗️ Project Structure
+Project Structure
+PSketch/
+├── ebpf_main.c          # Main eBPF kernel program
+├── ebpf_headers.h       # Constants and kernel headers
+├── ebpf_structures.h    # BPF map and flow record definitions
+├── ebpf_hash.h          # Hash function implementations
+├── ebpf_helpers.h       # In-kernel helper functions
+├── ebpf_manager.py      # eBPF program loader and map reader
+├── grpc_service.py      # gRPC server for user-space collection
+├── structures.py        # Python-side data structure definitions
+├── config.py            # Configuration parameters
+├── utils.py             # Utility functions
+├── main.py              # Entry point
+├── example_usage.py     # Usage examples
+└── requirements.txt     # Python dependencies
 
-```
-Priority-Sketch-in-eBPF-main/
-├── main.py                 # Main entry point
-├── config.py              # Configuration and constants
-├── structures.py           # Data structure definitions
-├── utils.py               # Utility functions
-├── ebpf_manager.py        # eBPF program management
-├── grpc_service.py        # gRPC service implementation
-├── ebpf_headers.h         # eBPF headers and constants
-├── ebpf_structures.h      # eBPF data structures
-├── ebpf_hash.h            # Hash function implementations
-├── ebpf_helpers.h         # eBPF helper functions
-├── ebpf_main.c            # Main eBPF program
-├── example_usage.py       # Usage examples
-├── requirements.txt       # Python dependencies
-└── README.md             # Project documentation
-```
+Evaluation
+Evaluated on CAIDA 10 Gbps backbone packet traces on the NSF FABRIC testbed.
+MetricResultTop-K Accuracy>95%Retransmission Recall>96%Throughput Overhead<1.1%CPU Usage<30%
 
----
-
-## 🔧 Technical Highlights
-
-### ✳️ Priority Table
-Implemented using an eBPF hash map to maintain a whitelist of high-priority flows by 5-tuple.
-
-### ✳️ Heavy Flow Table
-Collision-aware eviction with a voting-based scheme. Each entry uses a `negative_counter` to track hash collisions and evict outdated flows.
-
-### ✳️ Top-k Flow Estimation
-Three-layer Count-Min Sketch estimates packet counts. Final estimate uses:
-```
-min(cms1[i], cms2[j], cms3[k])
-```
-
-### ✳️ Retransmission Detection
-A packet is marked retransmitted if:
-```
-seq < expected_seq and (t_now - t_last) > THRESH
-```
-
-### ✳️ gRPC Interface
-User-space collector connects to eBPF via gRPC to receive prioritized stats and logs.
-
----
-
-## 📊 Evaluation Summary
-
-- **Top-k Accuracy**: >95%
-- **Retransmission Recall**: >96%
-- **Throughput Overhead**: <1.1%
-- **CPU Usage**: Moderate (<30%)
-- **Trace Used**: CAIDA 10Gbps packet captures
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-```bash
-# Install system dependencies
-sudo apt update
+Quick Start
+Prerequisites
+bashsudo apt update
 sudo apt install clang llvm python3-bcc
-
-# Install Python dependencies
 pip install -r requirements.txt
-```
+Run
+bashsudo python3 main.py
+Configuration
+Edit config.py to set network interface, gRPC parameters, eBPF constants, priority flow definitions, and logging paths.
 
-### Running the System
-```bash
-# Start the Priority-Sketch system
-sudo python3 main.py
-```
-
-### Configuration
-Edit `config.py` to customize:
-- Network interface names
-- gRPC server settings
-- eBPF program parameters
-- File paths and logging
-
----
-
-## 🔧 Development
-
-### Code Organization
-The codebase has been refactored for better organization:
-
-- **`config.py`**: All constants and configuration parameters
-- **`structures.py`**: Data structure definitions for both C and Python
-- **`utils.py`**: Utility functions for network operations, hashing, and data processing
-- **`ebpf_manager.py`**: eBPF program management and data collection
-- **`grpc_service.py`**: gRPC service implementation
-- **`main.py`**: Simple entry point
-
-### Adding New Features
-1. Add constants to `config.py`
-2. Define new structures in `structures.py`
-3. Implement utility functions in `utils.py`
-4. Update eBPF code in the `ebpf_*.h` and `ebpf_main.c` files
-5. Update Python managers as needed
-
----
-
-The project now contains the following core files:
-
-### Python Modules
-- **`main.py`** - Simplified main entry point
-- **`config.py`** - Configuration and constant management
-- **`structures.py`** - Data structure definitions
-- **`utils.py`** - Utility function collection
-- **`ebpf_manager.py`** - eBPF program management
-- **`grpc_service.py`** - gRPC service implementation
-- **`example_usage.py`** - Usage examples
-
-### eBPF Modules
-- **`ebpf_headers.h`** - Headers and constants
-- **`ebpf_structures.h`** - Data structure definitions
-- **`ebpf_hash.h`** - Hash function implementations
-- **`ebpf_helpers.h`** - Helper functions
-- **`ebpf_main.c`** - Main eBPF program
-
-### Documentation and Configuration
-- **`README.md`** - Project documentation
-- **`requirements.txt`** - Python dependencies
-
----
-
-## 🚀 Usage
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the system
-sudo python3 main.py
-
-# View examples
-python3 example_usage.py
-```
-
----
-
-## 🚀 Next Steps
-
-1. **Add Unit Tests**: Write test cases for each module
-2. **Performance Optimization**: Analyze and optimize critical paths
-3. **Error Handling**: Enhance error handling and recovery mechanisms
-4. **Monitoring**: Add system monitoring and metrics collection
-5. **Documentation**: Complete API documentation and usage guides
-
----
-
-## 📝 Summary
-
-Through this refactoring and cleanup, the code has been transformed from a single-file structure to a modular architecture, greatly improving code maintainability, extensibility, and readability. The new structure enables:
-
-- Developers to quickly locate and modify specific functionality
-- New features to be developed and tested independently
-- More flexible configuration management
-- Higher code reusability
-- Easier system deployment and maintenance
-
-This modular design provides a solid foundation for future feature extensions and performance optimizations.
-
----
-
-## 📎 Citation
-
-ieeexplore.ieee.org/document/11416971
+Citation
+If you use PSketch in your research, please cite:
+@inproceedings{dai2026psketch,
+  title     = {PSketch: A Priority-Aware Sketch Architecture for Real-Time Flow Monitoring via eBPF},
+  author    = {Dai, Yuanjun and Guo, Qingzhe and Wang, Xiangren},
+  booktitle = {Proceedings of IEEE ICNC 2026},
+  year      = {2026},
+  doi       = {10.1109/ICNC68183.2026.11416971}
+}
