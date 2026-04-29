@@ -186,4 +186,4 @@ This modular design provides a solid foundation for future feature extensions an
 
 ## 📎 Citation
 
-> This project is currently under review. A formal citation will be added after publication.
+ieeexplore.ieee.org/document/11416971
